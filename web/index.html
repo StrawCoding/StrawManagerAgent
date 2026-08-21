@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>StrawManagerAgent</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --fg: #e8eaed;
+      --muted: #9aa0a6;
+      --accent: #7aa2f7;
+      --card: #1a1d24;
+      --line: #2a2f3a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Noto Sans TC", sans-serif;
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #1b2437 0%, transparent 55%),
+        var(--bg);
+      color: var(--fg);
+      min-height: 100vh;
+    }
+    header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+    header strong { font-size: 1.15rem; letter-spacing: 0.02em; }
+    header span { color: var(--muted); font-size: 0.9rem; }
+    main {
+      display: grid;
+      grid-template-columns: 1fr 1.2fr;
+      gap: 1rem;
+      padding: 1rem 1.5rem 2rem;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+    section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 1rem;
+    }
+    h2 { margin: 0 0 0.75rem; font-size: 0.95rem; color: var(--muted); font-weight: 600; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 0.6rem; }
+    input, select, textarea, button {
+      width: 100%;
+      margin-top: 0.3rem;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: #12151c;
+      color: var(--fg);
+      padding: 0.55rem 0.65rem;
+      font: inherit;
+    }
+    textarea { min-height: 90px; resize: vertical; }
+    button {
+      background: var(--accent);
+      color: #0b1020;
+      border: none;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 0.85rem;
+    }
+    button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+    #log {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 0.78rem;
+      white-space: pre-wrap;
+      max-height: 520px;
+      overflow: auto;
+      color: var(--muted);
+    }
+    .row { display: flex; gap: 0.5rem; }
+    .row > * { flex: 1; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>StrawManagerAgent</strong>
+    <span>Orchestration console · Baseline v1.1</span>
+  </header>
+  <main>
+    <section>
+      <h2>Session</h2>
+      <label>API base</label>
+      <input id="api" value="http://127.0.0.1:8741" />
+      <label>Mode</label>
+      <select id="mode">
+        <option value="manager">Manager</option>
+        <option value="team_leader">Team Leader</option>
+        <option value="developer">Developer</option>
+      </select>
+      <label>Project name</label>
+      <input id="pname" value="demo" />
+      <label>Repo path</label>
+      <input id="repo" value="/tmp" />
+      <label>Request</label>
+      <textarea id="req">修好登入問題</textarea>
+      <div class="row">
+        <button id="boot">建立專案／Session／Plan</button>
+        <button id="approve" class="secondary">核准 Plan</button>
+      </div>
+      <div class="row">
+        <button id="spawn" class="secondary">Spawn Task</button>
+        <button id="sse" class="secondary">訂閱 SSE</button>
+      </div>
+      <p id="meta" style="color:var(--muted);font-size:0.85rem;margin-top:0.8rem;"></p>
+    </section>
+    <section>
+      <h2>Live events</h2>
+      <div id="log"></div>
+    </section>
+  </main>
+  <script>
+    const state = {};
+    const logEl = document.getElementById("log");
+    const meta = document.getElementById("meta");
+    function log(line) {
+      logEl.textContent += line + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    async function api(path, opts = {}) {
+      const base = document.getElementById("api").value.replace(/\/$/, "");
+      const res = await fetch(base + path, {
+        headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+        ...opts,
+      });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch { data = { raw: text }; }
+      if (!res.ok) throw new Error(JSON.stringify(data));
+      return data;
+    }
+    document.getElementById("boot").onclick = async () => {
+      try {
+        const proj = await api("/projects", {
+          method: "POST",
+          body: JSON.stringify({
+            name: document.getElementById("pname").value,
+            repo_path: document.getElementById("repo").value,
+          }),
+        });
+        const mode = document.getElementById("mode").value;
+        const ses = await api("/sessions", {
+          method: "POST",
+          body: JSON.stringify({ project_id: proj.id, mode, title: "web" }),
+        });
+        const req = document.getElementById("req").value;
+        const plan = await api(`/sessions/${ses.id}/plans`, {
+          method: "POST",
+          body: JSON.stringify({ title: req.slice(0, 80), body_md: "# Plan\n\n" + req }),
+        });
+        const task = await api(`/sessions/${ses.id}/tasks`, {
+          method: "POST",
+          body: JSON.stringify({
+            title: "work",
+            prompt: req,
+            plan_id: plan.id,
+            confirmed: mode === "developer",
+          }),
+        });
+        Object.assign(state, { proj, ses, plan, task });
+        meta.textContent = `session=${ses.id} plan=${plan.id}(${plan.status}) task=${task.id} dispatchable=${task.dispatchable}`;
+        log("boot ok");
+      } catch (e) {
+        log("ERROR " + e.message);
+      }
+    };
+    document.getElementById("approve").onclick = async () => {
+      try {
+        if (!state.plan) throw new Error("no plan");
+        const plan = await api(`/plans/${state.plan.id}/approve`, { method: "POST", body: "{}" });
+        state.plan = plan;
+        meta.textContent += ` → approved`;
+        log("plan approved");
+      } catch (e) {
+        log("ERROR " + e.message);
+      }
+    };
+    document.getElementById("spawn").onclick = async () => {
+      try {
+        if (!state.task) throw new Error("no task");
+        const out = await api(`/tasks/${state.task.id}/spawn`, { method: "POST", body: "{}" });
+        log("spawn " + JSON.stringify(out));
+      } catch (e) {
+        log("ERROR " + e.message);
+      }
+    };
+    document.getElementById("sse").onclick = async () => {
+      if (!state.ses) return log("ERROR no session");
+      const base = document.getElementById("api").value.replace(/\/$/, "");
+      const es = new EventSource(base + `/sessions/${state.ses.id}/events`);
+      es.onmessage = (ev) => log(ev.data);
+      es.addEventListener("worker.spawned", (ev) => log("worker.spawned " + ev.data));
+      es.onerror = () => log("sse error/reconnect…");
+      log("sse subscribed");
+    };
+  </script>
+</body>
+</html>
